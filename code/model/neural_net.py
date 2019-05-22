@@ -7,10 +7,11 @@ import numpy as np
 import pandas as pd
 from scipy.stats import pearsonr
 from keras.models import Model, load_model
-from keras.layers import Input, Dense, BatchNormalization, ReLU, Dropout
+from keras.layers import Input, Dense, BatchNormalization, ReLU, Dropout, concatenate
 from keras.optimizers import Adam, RMSprop
 from keras.callbacks import ModelCheckpoint, EarlyStopping, TensorBoard
 import keras.backend as K
+import tensorflow as tf
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score
 import pickle as pkl
 
@@ -25,69 +26,74 @@ def pearson_coef(y_true, y_pred):
     y_pred_c = y_pred - K.mean(y_pred)
     return K.sum(y_true_c * y_pred_c) / (K.sqrt(K.sum(K.square(y_true_c)) * K.sum(K.square(y_pred_c))) + K.epsilon())
 
-##################################    model    ########################################
-class fcnn(object):
-    '''
-    Fully connected nerual network
-    '''
-    def __init__(self, input_length, loss, hidden_layer_sizes=(128, 64, 32), output_activation='linear', output_length=1, dropout=0.2, learning_rate=1e-4, optimizer='Adam'):
-        self.input_length = input_length
-        self.output_length = output_length
-        self.hidden_layer_sizes = hidden_layer_sizes
-        self.dropout = dropout
-        self.learning_rate = learning_rate
-        self.output_activation = output_activation
-        if loss == 'mse':
-            self.loss = 'mse'
-            self.metrics = [r_square]
-        elif loss == 'binary_crossentropy':
-            self.loss = 'binary_crossentropy'
-            self.metrics = ['accuracy']
-        elif loss == 'sparse_categorical_crossentropy':
-            if self.output_length <= 2:
-                raise ValueError('output_length should be larger than 2, if use sparse_categorical_crossentropy loss.')
-            self.loss = 'sparse_categorical_crossentropy'
-            self.metrics = ['accuracy']
-        else:
-            raise ValueError('Unrecognizable loss. Either mse or cross_entropy.')
-        if optimizer == 'Adam':
-            self.optimizer = Adam(lr=self.learning_rate)
-        elif optimizer == 'RMSprop':
-            self.optimizer = RMSprop(lr=self.learning_rate, decay=1e-6)
-        else:
-            raise ValueError('Unrecognizable optimizer. Either Adam or RMSprop.')
-        self.model = self._model_init()
-    
+def weighted_mse_v1(y_true, y_pred):
+    loss = K.square(y_true - y_pred)
+    weight_incremental = 2 * K.abs(y_true) + 1
+    weight_flat = tf.ones(tf.shape(y_true))
+    weight = tf.where(K.less_equal(K.abs(y_true), 0.5), weight_incremental, weight_flat)
+    return K.mean(loss * weight)
 
-    def _model_init(self):
-        print('Initilizing fully connected nerual netowrk model ...', end='', flush=True)
-        inputs = Input(shape=(self.input_length,), name='input')
-        # hidden layers
-        for i, neurons in enumerate(self.hidden_layer_sizes):
-            if i == 0:
-                dense = Dense(neurons) (inputs)
-                bn = BatchNormalization() (dense)
-                relu = ReLU() (bn)
-                dropout = Dropout(self.dropout) (relu)
-            else:
-                dense = Dense(neurons) (dropout)
-                bn = BatchNormalization() (dense)
-                relu = ReLU() (bn)
-                dropout = Dropout(self.dropout) (relu)
-        if self.output_activation == 'linear':
-            outputs = Dense(1, name='output') (dropout)
-        elif self.output_activation == 'sigmoid':
-            outputs = Dense(1, activation='sigmoid', name='output') (dropout)
-        elif self.output_activation == 'softmax':
-            outputs = Dense(self.output_length, activation='softmax', name='output') (dropout)
+def weighted_mse_v2(y_true, y_pred):
+    loss = K.square(y_true - y_pred)
+    weight_incremental = 4 * K.abs(y_true) + 1
+    weight_flat = tf.ones(tf.shape(y_true))
+    weight = tf.where(K.less_equal(K.abs(y_true), 0.25), weight_incremental, weight_flat)
+    return K.mean(loss * weight)
+
+def weighted_mse_v3(y_true, y_pred):
+    loss = K.square(y_true - y_pred)
+    weight_neg = 5 * K.abs(y_true) + 1
+    weight_pos = tf.ones(tf.shape(y_true))
+    weight = tf.where(K.less_equal(y_true, 0), weight_neg, weight_pos)
+    return K.mean(loss * weight)
+
+def weighted_mse_v4(y_true, y_pred):
+    loss = K.square(y_true - y_pred)
+    weight_large = K.exp(0.5 - y_true)
+    weight_one = tf.ones(tf.shape(y_true))
+    weight = tf.where(K.less_equal(y_true, 0.5), weight_large, weight_one)
+    return K.mean(loss * weight)
+
+
+##################################    model    ########################################
+class neural_net(object):
+    '''
+    Neural network model
+    '''
+    def __init__(self, input_length, output_length=1, loss='mse', loss_weights=None, encoding_layer_sizes=None, fully_connected_layer_sizes=(128, 64, 32), dropout=0.2, learning_rate=1e-4, optimizer='Adam'):
+        self.input_length                = input_length
+        self.output_length               = output_length
+        self.encoding_layer_sizes        = encoding_layer_sizes
+        self.fully_connected_layer_sizes = fully_connected_layer_sizes
+        self.dropout                     = dropout
+        self.learning_rate               = learning_rate
+        self.loss_weights                = loss_weights
+        self._parse_loss(loss)
+        self._parse_optimizer(optimizer)
+        self.model = self._model_initializer()
+
+
+    def _model_initializer(self):
+        print('Initializing connected neural network model ...', end='', flush=True)
+        # fully connect network
+        if self.encoding_layer_sizes is None:
+            inputs = Input(shape=(self.input_length,), name='input')
+            outputs = self._fully_connected_layers(inputs=inputs, layer_sizes=self.fully_connected_layer_sizes+(self.output_length,), dropout=self.dropout, output_activation=self.output_activation)
+        # encoding input features than fully connect
         else:
-            raise ValueError('Unrecognizabel activation function {}: should be linear, sigmoid or softmax.'.format(self.output_activation))
-        
+            if len(self.input_length) <= 1:
+                raise ValueError('Multiple input is need if want to encode different features.')
+            if self.input_length != len(self.encoding_layer_sizes):
+                raise ValueError('Input length and encoding layer size do not match.')
+            inputs = [Input(shape=(length,), name='input'+str(i)) for i, length in enumerate(self.input_length)]
+            features = [self._fully_connected_layers(inputs=inputs[i], layer_sizes=layers, dropout=self.dropout, output_activation='linear') for i, layers in enumerate(self.encoding_layer_sizes)]
+            features = concatenate(features)
+            outputs = self._fully_connected_layers(inputs=features, layer_sizes=self.fully_connected_layer_sizes+(self.output_length,), dropout=self.dropout, output_activation=self.output_activation)
+        # construct
         model = Model(inputs=inputs, outputs=outputs)
-        model.compile(loss=self.loss, optimizer=self.optimizer, metrics=self.metrics)
+        model.compile(loss=self.loss, loss_weights=self.loss_weights, optimizer=self.optimizer, metrics=self.metrics)
         print(' Done\nModel structure summary:', flush=True)
         print(model.summary())
-
         return model
 
 
@@ -95,10 +101,13 @@ class fcnn(object):
         print('Start training neural network ... ', end='', flush=True)
         self.model_name = model_name
         self.batch_size = batch_size
-        self.epchos = epochs
+        self.epochs = epochs
         self.tol = tolerance
-        model_name = os.path.join(model_path, '{}.lr-{}.layers-{}.drop-{}.batch-{}.acti-{}.epcho-{}.tol-{}.h5'.format(self.model_name, self.learning_rate, self.hidden_layer_sizes, self.dropout, self.batch_size, self.output_activation, self.epchos, self.tol))
-        log_dir = os.path.join(model_path, '{}.lr-{}.layers-{}.drop-{}.batch-{}.acti-{}.epcho-{}.tol-{}.log'.format(self.model_name, self.learning_rate, self.hidden_layer_sizes, self.dropout, self.batch_size, self.output_activation, self.epchos, self.tol))
+        # path
+        model_name = os.path.join(model_path, '{}@inlin_{}.outlen_{}.loss_{}.lossweight_{}.ecl_{}.fcl_{}.lr_{}.drop_{}.batch_{}.epoch_{}.tol_{}.h5')
+        model_name = model_name.format(self.model_name, self.input_length, self.output_length, self.loss_name, self.loss_weights, self.encoding_layer_sizes, self.fully_connected_layer_sizes, 
+                                       self.learning_rate, self.dropout, self.batch_size, self.epochs, self.tol)
+        log_dir = model_name.strip('.h5') + '.log'
         if not os.path.isdir(log_dir):
             os.mkdir(log_dir)
         # monitor
@@ -106,25 +115,19 @@ class fcnn(object):
         check_pointer = ModelCheckpoint(model_name, verbose=verbose, save_best_only=True)
         log = TensorBoard(log_dir=log_dir)
         result = self.model.fit(X_train, y_train, 
-                                validation_split=validation_split, 
-                                validation_data=validation_data,
-                                batch_size=batch_size, 
-                                epochs=epochs, 
-                                verbose=verbose,
-                                shuffle=True,
+                                validation_split=validation_split, validation_data=validation_data,
+                                batch_size=batch_size, epochs=epochs, verbose=verbose,shuffle=True,
                                 callbacks=[early_stopper, check_pointer, log])
-        if self.loss == 'mse':
-            self.model = load_model(model_name, custom_objects={'r_square': r_square})
-        else:
-            self.model = load_model(model_name)
-        print('Done')
+        self.loadModel(model_name)
         return result.history
 
 
     def loadModel(self, path):
         print('Loading trained neural network model ... ', end='', flush=True)
-        if self.loss == 'mse':
+        if self.loss_name in ['mse', 'mae']:
             self.model = load_model(path, custom_objects={'r_square': r_square})
+        elif 'weighted_mse' in self.loss_name:
+            self.model = load_model(path, custom_objects={'r_square': r_square, self.loss_name: eval(self.loss_name)})
         else:
             self.model = load_model(path)
         print('Done')
@@ -183,6 +186,75 @@ class fcnn(object):
             metrics_table = metrics_table.add_suffix('_'+suffix)
             # metrics_table.sort_index(axis=1, inplace=True)
         return metrics_table
+    
+
+    ### >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>  utility  <<<<<<<<<<<<<<<<<<<<<<<<<<<<< ###
+    def _parse_loss(self, loss):
+        '''
+        Parse loss function.
+        '''
+        if loss in ['mse', 'mae']:
+            self.loss_name = self.loss = loss
+            self.metrics = [r_square]
+            self.output_activation = 'linear'
+        elif 'weighted_mse' in loss:
+            self.loss_name = loss
+            self.loss = eval(loss)
+            self.metrics = [r_square]
+            self.output_activation = 'linear'
+        elif loss == 'binary_crossentropy':
+            self.loss_name = self.loss = loss
+            self.metrics = ['accuracy']
+            self.output_activation = 'sigmoid'
+        elif loss == 'sparse_categorical_crossentropy':
+            if self.output_length <= 2:
+                raise ValueError('output_length should be larger than 2, if use sparse_categorical_crossentropy loss.')
+            self.loss_name = self.loss = loss
+            self.metrics = ['accuracy']
+            self.output_activation = 'softmax'
+        else:
+            raise ValueError('Unrecognizable loss. Either mse or cross_entropy.')
+    
+    def _parse_optimizer(self, optimizer):
+        '''
+        Parse optimizer function.
+        '''
+        if optimizer == 'Adam':
+            self.optimizer = Adam(lr=self.learning_rate)
+        elif optimizer == 'RMSprop':
+            self.optimizer = RMSprop(lr=self.learning_rate, decay=1e-6)
+        else:
+            raise ValueError('Unrecognizable optimizer. Either Adam or RMSprop.')
+    
+    @staticmethod
+    def _fully_connected_layers(inputs, layer_sizes, dropout, output_activation):
+        '''
+        Fully connected layers
+        '''
+        hidden_layers, output_length = layer_sizes[:-1], layer_sizes[-1]
+        for i, neurons in enumerate(hidden_layers):
+            if i == 0:
+                dense = Dense(neurons) (inputs)
+                bn = BatchNormalization() (dense)
+                relu = ReLU() (bn)
+                dropout = Dropout(dropout) (relu)
+            else:
+                dense = Dense(neurons) (dropout)
+                bn = BatchNormalization() (dense)
+                relu = ReLU() (bn)
+                dropout = Dropout(dropout) (relu)
+        if output_activation in ['linear', 'sigmoid']:
+            if output_length > 1:
+                outputs = [Dense(1, activation=output_activation) (dropout) for i in range(output_length)]
+            else:
+                outputs = Dense(1, activation=output_activation) (dropout)
+        elif output_activation == 'softmax':
+            if output_length <= 2:
+                raise ValueError('Output length should be larger than 2 when using softmax activation.')
+            outputs = Dense(output_length, activation='softmax') (dropout)
+        else:
+            raise ValueError('Unrecognizable activation function {}: should be linear, sigmoid or softmax.'.format(output_activation))
+        return outputs
 
 
 ##################################    model    ########################################
