@@ -27,6 +27,13 @@ def cleanCellName(name):
         alias = 'NCIH322'
     return alias
 
+def index_array(arr):
+    index = dict()
+    for i, x in enumerate(arr):
+        index[i] = x
+    return index
+
+
 ### >>>>>>>>>>>>>>>>>>>>>>>>>>>   read data   <<<<<<<<<<<<<<<<<<<<<<<<<<<<< ###
 def read_cancer_gene():
     path = os.path.realpath(__file__)

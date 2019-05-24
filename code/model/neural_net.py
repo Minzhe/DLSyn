@@ -63,32 +63,32 @@ class neural_net(object):
     def __init__(self, input_length, output_length=1, loss='mse', loss_weights=None, encoding_layer_sizes=None, fully_connected_layer_sizes=(128, 64, 32), dropout=0.2, learning_rate=1e-4, optimizer='Adam'):
         self.input_length                = input_length
         self.output_length               = output_length
+        self.loss_weights                = loss_weights
         self.encoding_layer_sizes        = encoding_layer_sizes
         self.fully_connected_layer_sizes = fully_connected_layer_sizes
         self.dropout                     = dropout
         self.learning_rate               = learning_rate
-        self.loss_weights                = loss_weights
-        self._parse_loss(loss)
-        self._parse_optimizer(optimizer)
+        self._parse_loss(loss)                  # loss, metrics, output_activation
+        self._parse_optimizer(optimizer)        # optimizer
         self.model = self._model_initializer()
 
 
     def _model_initializer(self):
         print('Initializing connected neural network model ...', end='', flush=True)
         # fully connect network
-        if self.encoding_layer_sizes is None:
-            inputs = Input(shape=(self.input_length,), name='input')
-            outputs = self._fully_connected_layers(inputs=inputs, layer_sizes=self.fully_connected_layer_sizes+(self.output_length,), dropout=self.dropout, output_activation=self.output_activation)
+        if self.encoding_layer_sizes is None and len(self.input_length) == 1:
+            inputs = Input(shape=(self.input_length[0],), name='input')
+            outputs = self._fully_connected_layers(inputs=inputs, layer_sizes=self.fully_connected_layer_sizes+(self.output_length,), dropout_rate=self.dropout, last_norm=False, output_activation=self.output_activation)
         # encoding input features than fully connect
-        else:
-            if len(self.input_length) <= 1:
-                raise ValueError('Multiple input is need if want to encode different features.')
-            if self.input_length != len(self.encoding_layer_sizes):
-                raise ValueError('Input length and encoding layer size do not match.')
+        elif self.encoding_layer_sizes is not None and len(self.input_length) >= 2:
+            if len(self.input_length) != len(self.encoding_layer_sizes):
+                raise ValueError('Input number {} and encoding layer size {} should match.'.format(self.input_length, self.encoding_layer_sizes))
             inputs = [Input(shape=(length,), name='input'+str(i)) for i, length in enumerate(self.input_length)]
-            features = [self._fully_connected_layers(inputs=inputs[i], layer_sizes=layers, dropout=self.dropout, output_activation='linear') for i, layers in enumerate(self.encoding_layer_sizes)]
+            features = [self._fully_connected_layers(inputs=inputs[i], layer_sizes=layers, dropout_rate=self.dropout, last_norm=True) for i, layers in enumerate(self.encoding_layer_sizes)]
             features = concatenate(features)
-            outputs = self._fully_connected_layers(inputs=features, layer_sizes=self.fully_connected_layer_sizes+(self.output_length,), dropout=self.dropout, output_activation=self.output_activation)
+            outputs = self._fully_connected_layers(inputs=features, layer_sizes=self.fully_connected_layer_sizes+(self.output_length,), dropout_rate=self.dropout, last_norm=False, output_activation=self.output_activation)
+        else:
+            raise ValueError('Input number {} and encoding layer size {} should match.'.format(self.input_length, self.encoding_layer_sizes))
         # construct
         model = Model(inputs=inputs, outputs=outputs)
         model.compile(loss=self.loss, loss_weights=self.loss_weights, optimizer=self.optimizer, metrics=self.metrics)
@@ -104,9 +104,10 @@ class neural_net(object):
         self.epochs = epochs
         self.tol = tolerance
         # path
-        model_name = os.path.join(model_path, '{}@inlin_{}.outlen_{}.loss_{}.lossweight_{}.ecl_{}.fcl_{}.lr_{}.drop_{}.batch_{}.epoch_{}.tol_{}.h5')
+        model_name = os.path.join(model_path, '{}@in_{}.out_{}.loss_{}.lw_{}.ecl_{}.fcl_{}.lr_{}.drop_{}.batch_{}.epoch_{}.tol_{}.h5')
         model_name = model_name.format(self.model_name, self.input_length, self.output_length, self.loss_name, self.loss_weights, self.encoding_layer_sizes, self.fully_connected_layer_sizes, 
                                        self.learning_rate, self.dropout, self.batch_size, self.epochs, self.tol)
+        model_name = model_name.replace(' ', '')
         log_dir = model_name.strip('.h5') + '.log'
         if not os.path.isdir(log_dir):
             os.mkdir(log_dir)
@@ -227,33 +228,28 @@ class neural_net(object):
             raise ValueError('Unrecognizable optimizer. Either Adam or RMSprop.')
     
     @staticmethod
-    def _fully_connected_layers(inputs, layer_sizes, dropout, output_activation):
+    def _fully_connected_layers(inputs, layer_sizes, dropout_rate, last_norm, output_activation=None):
         '''
         Fully connected layers
         '''
-        hidden_layers, output_length = layer_sizes[:-1], layer_sizes[-1]
-        for i, neurons in enumerate(hidden_layers):
-            if i == 0:
+        if layer_sizes is None: return inputs
+        for i, neurons in enumerate(layer_sizes):
+            if i < len(layer_sizes) - 1:    # hidden layer
                 dense = Dense(neurons) (inputs)
                 bn = BatchNormalization() (dense)
                 relu = ReLU() (bn)
-                dropout = Dropout(dropout) (relu)
-            else:
-                dense = Dense(neurons) (dropout)
-                bn = BatchNormalization() (dense)
-                relu = ReLU() (bn)
-                dropout = Dropout(dropout) (relu)
-        if output_activation in ['linear', 'sigmoid']:
-            if output_length > 1:
-                outputs = [Dense(1, activation=output_activation) (dropout) for i in range(output_length)]
-            else:
-                outputs = Dense(1, activation=output_activation) (dropout)
-        elif output_activation == 'softmax':
-            if output_length <= 2:
-                raise ValueError('Output length should be larger than 2 when using softmax activation.')
-            outputs = Dense(output_length, activation='softmax') (dropout)
-        else:
-            raise ValueError('Unrecognizable activation function {}: should be linear, sigmoid or softmax.'.format(output_activation))
+                inputs = Dropout(dropout_rate) (relu)
+            else:                           # last layer, decide if it is the final output
+                if last_norm:               # normalize last layer
+                    dense = Dense(neurons) (inputs)
+                    bn = BatchNormalization() (dense)
+                    outputs = ReLU() (bn)
+                else:                       # output layer, not normalize
+                    if output_activation not in ['linear', 'sigmoid', 'softmax']:
+                        raise ValueError('Unrecognizable activation function {}: should be linear, sigmoid or softmax.'.format(output_activation))
+                    if output_activation == 'softmax' and neurons <= 2:
+                        raise ValueError('Output length should be larger than 2 when using softmax activation.')
+                    outputs = Dense(neurons, activation=output_activation) (inputs) 
         return outputs
 
 
