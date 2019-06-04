@@ -10,32 +10,33 @@ sys.path.append(os.path.join(proj_dir, 'code'))
 import utility.utility as util
 
 ###############################      function     ##############################
-def cal_syn_score(single_path, combo_path, out_path):
+def cal_syn_score(single_path, combo_path, out_path, method):
     single = pd.read_csv(single_path)
     combo = pd.read_csv(combo_path)
     # get single effect score
     combo = append_single(combo, single)
     print('Calculating synergy score ...')
-    combo['RATIO_EXPECTED'] = get_expected(combo['RATIO1'], combo['RATIO2'])
-    combo['RATIOADJ_EXPECTED'] = get_expected(combo['RATIOADJ1'], combo['RATIOADJ2'])
+    combo['RATIO_EXPECTED'] = get_expected(combo['RATIO1'], combo['RATIO2'], method=method)
+    combo['RATIOADJ_EXPECTED'] = get_expected(combo['RATIOADJ1'], combo['RATIOADJ2'], method=method)
     combo['RATIO_SYN'] = combo['RATIO'] - combo['RATIO_EXPECTED']
     combo['RATIOADJ_SYN'] = combo['RATIOADJ'] - combo['RATIOADJ_EXPECTED']
     combo['SCORE_SYN'] = combo['RATIOADJ'] - combo['EXPECTED']
     combo['CELL'] = combo['CELL'].apply(util.cleanCellName)
     combo.to_csv(out_path, index=None)
 
-def cal_min_syn_score(single_path, combo_path, out_path):
+def cal_min_syn_score(single_path, combo_path, out_path, method):
     single = pd.read_csv(single_path)
     combo = pd.read_csv(combo_path)
     # get single effect score
     combo = append_single(combo, single, conc=False)
     print('Calculating synergy score ...')
-    combo['RATIO_EXPECTED'] = get_expected(combo['RATIO1'], combo['RATIO2'])
-    combo['RATIOADJ_EXPECTED'] = get_expected(combo['RATIOADJ1'], combo['RATIOADJ2'])
+    combo['RATIO_EXPECTED'] = get_expected(combo['RATIO1'], combo['RATIO2'], method=method)
+    combo['RATIOADJ_EXPECTED'] = get_expected(combo['RATIOADJ1'], combo['RATIOADJ2'], method=method)
     combo['RATIO_SYN'] = combo['RATIO'] - combo['RATIO_EXPECTED']
     combo['RATIOADJ_SYN'] = combo['RATIOADJ'] - combo['RATIOADJ_EXPECTED']
     combo['SCORE_SYN'] = combo['RATIOADJ'] - combo['EXPECTED']
     combo['CELL'] = combo['CELL'].apply(util.cleanCellName)
+    out_path = out_path.strip('.csv') + '.{}.csv'.format(method)
     combo.to_csv(out_path, index=None)
 
 
@@ -68,11 +69,14 @@ def create_single_dict(df, conc):
         eff = {(row['TYPE'], row['CELL'], row['COMP1']): (row['RATIO'], row['RATIOADJ']) for idx, row in df.iterrows()}
     return eff
 
-def get_expected(x1, x2):
+def get_expected(x1, x2, method):
     score = np.array([np.nan] * len(x1))
-    idx = (x1 <= 0) | (x2 <= 0)
-    score[idx] = np.minimum(x1, x2)[idx]
-    score[~idx] = (np.minimum(x1, 1) * np.minimum(x2, 1))[~idx]
+    if method == 'nci':
+        idx = (x1 <= 0) | (x2 <= 0)
+        score[idx] = np.minimum(x1, x2)[idx]
+        score[~idx] = (np.minimum(x1, 1) * np.minimum(x2, 1))[~idx]
+    elif method == 'hsa':
+        score = np.minimum(x1, x2)
     return score
 
 
@@ -85,4 +89,4 @@ single_min_path = os.path.join(proj_dir, 'data/Curated/ALMANAC/ComboScore/curate
 out_min_path    = os.path.join(proj_dir, 'data/Curated/ALMANAC/ComboScore/curated.combo.syn.doseagg_min.csv')
 
 # cal_syn_score(single_path, combo_path, out_path)
-cal_min_syn_score(single_min_path, combo_min_path, out_min_path)
+cal_min_syn_score(single_min_path, combo_min_path, out_min_path, method='hsa')

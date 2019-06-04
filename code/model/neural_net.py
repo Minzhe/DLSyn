@@ -7,9 +7,9 @@ import numpy as np
 import pandas as pd
 from scipy.stats import pearsonr
 from keras.models import Model, load_model
-from keras.layers import Input, Dense, BatchNormalization, ReLU, Dropout, concatenate
+from keras.layers import Input, Dense, BatchNormalization, ReLU, Dropout, concatenate, multiply, add
 from keras.optimizers import Adam, RMSprop
-from keras.callbacks import ModelCheckpoint, EarlyStopping, TensorBoard
+from keras.callbacks import ModelCheckpoint, EarlyStopping, TensorBoard, ReduceLROnPlateau
 import keras.backend as K
 import tensorflow as tf
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score
@@ -60,12 +60,13 @@ class neural_net(object):
     '''
     Neural network model
     '''
-    def __init__(self, input_length, output_length=1, loss='mse', loss_weights=None, encoding_layer_sizes=None, fully_connected_layer_sizes=(128, 64, 32), dropout=0.2, learning_rate=1e-4, optimizer='Adam'):
+    def __init__(self, input_length, output_length=1, loss='mse', loss_weights=None, encoding_layer_sizes=None, fully_connected_layer_sizes=(128, 64, 32), merge='concat', dropout=0.2, learning_rate=1e-4, optimizer='Adam'):
         self.input_length                = input_length
         self.output_length               = output_length
         self.loss_weights                = loss_weights
         self.encoding_layer_sizes        = encoding_layer_sizes
         self.fully_connected_layer_sizes = fully_connected_layer_sizes
+        self.merge                       = merge
         self.dropout                     = dropout
         self.learning_rate               = learning_rate
         self._parse_loss(loss)                  # loss, metrics, output_activation
@@ -85,7 +86,12 @@ class neural_net(object):
                 raise ValueError('Input number {} and encoding layer size {} should match.'.format(self.input_length, self.encoding_layer_sizes))
             inputs = [Input(shape=(length,), name='input'+str(i)) for i, length in enumerate(self.input_length)]
             features = [self._fully_connected_layers(inputs=inputs[i], layer_sizes=layers, dropout_rate=self.dropout, last_norm=True) for i, layers in enumerate(self.encoding_layer_sizes)]
-            features = concatenate(features)
+            if self.merge == 'concat':
+                features = concatenate(features)
+            elif 'film' in self.merge:
+                x, m = list(map(int, self.merge.split('-')[-1].split(':')))
+                film = self._FiLM_layer(features[x], features[m])
+                features = concatenate([film] + [f for i, f in enumerate(features) if i not in [x,m]])
             outputs = self._fully_connected_layers(inputs=features, layer_sizes=self.fully_connected_layer_sizes+(self.output_length,), dropout_rate=self.dropout, last_norm=False, output_activation=self.output_activation)
         else:
             raise ValueError('Input number {} and encoding layer size {} should match.'.format(self.input_length, self.encoding_layer_sizes))
@@ -104,9 +110,9 @@ class neural_net(object):
         self.epochs = epochs
         self.tol = tolerance
         # path
-        model_name = os.path.join(model_path, '{}@in_{}.out_{}.loss_{}.lw_{}.ecl_{}.fcl_{}.lr_{}.drop_{}.batch_{}.epoch_{}.tol_{}.h5')
-        model_name = model_name.format(self.model_name, self.input_length, self.output_length, self.loss_name, self.loss_weights, self.encoding_layer_sizes, self.fully_connected_layer_sizes, 
-                                       self.learning_rate, self.dropout, self.batch_size, self.epochs, self.tol)
+        model_name = os.path.join(model_path, '{}@in_{}.out_{}.loss_{}.lw_{}.ecl_{}.fcl_{}.merge_{}.lr_{}.drop_{}.batch_{}.epoch_{}.h5')
+        model_name = model_name.format(self.model_name, self.input_length, self.output_length, self.loss_name, self.loss_weights, self.encoding_layer_sizes, self.fully_connected_layer_sizes, self.merge,
+                                       self.learning_rate, self.dropout, self.batch_size, self.epochs)
         model_name = model_name.replace(' ', '')
         log_dir = model_name.strip('.h5') + '.log'
         if not os.path.isdir(log_dir):
@@ -114,6 +120,7 @@ class neural_net(object):
         # monitor
         early_stopper = EarlyStopping(patience=tolerance, verbose=verbose)
         check_pointer = ModelCheckpoint(model_name, verbose=verbose, save_best_only=True)
+        # lr_reducer = ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=10, min_lr=1e-4, verbose=1)
         log = TensorBoard(log_dir=log_dir)
         result = self.model.fit(X_train, y_train, 
                                 validation_split=validation_split, validation_data=validation_data,
@@ -251,6 +258,15 @@ class neural_net(object):
                         raise ValueError('Output length should be larger than 2 when using softmax activation.')
                     outputs = Dense(neurons, activation=output_activation) (inputs) 
         return outputs
+    
+    @staticmethod
+    def _FiLM_layer(x, modulate):
+        x_shape = x.get_shape().as_list()[1]
+        m_shape = modulate.get_shape().as_list()[1]
+        if x_shape != m_shape: raise ValueError('x shape and modulate shape should be same for film mergeing.')
+        gamma = Dense(m_shape, activation='sigmoid') (modulate)
+        beta = Dense(m_shape, activation='tanh') (modulate)
+        return add([multiply([x, gamma]), beta])
 
 
 ##################################    model    ########################################

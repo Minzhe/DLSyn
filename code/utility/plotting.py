@@ -2,11 +2,20 @@
 ###                               utility.py                              ###
 #############################################################################
 import numpy as np
-import matplotlib as plt
+import matplotlib.pyplot as plt
 import seaborn as sns
 sns.set_style('white')
 from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 from scipy.stats import pearsonr, spearmanr
+
+#########################       plot correlation      ##########################
+def plot_correlation_train_val(y_train, y_test, pred_train, pred_test, fig_path):
+    f, ax = plt.subplots(2, 2, figsize=(16,16))
+    plot_correlation(y_train, pred_train, 'Training set', ax[0][0])
+    plot_correlation(y_test, pred_test, 'Validation set', ax[0][1])
+    plot_density(y_train, ax[1][0])
+    plot_density(y_test, ax[1][1])
+    f.savefig(fig_path)
 
 def plot_correlation(truth, pred, title, ax):
     truth = np.reshape(truth, -1)
